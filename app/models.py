@@ -11,3 +11,9 @@ class Customer:
 class KycInput:
     customer: Customer
     product: str  # the product the customer accepted
+
+
+@dataclass
+class AgentReply:
+    text: str
+    finished: bool  # True once the agent has presented its options

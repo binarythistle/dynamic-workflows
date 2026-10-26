@@ -4,7 +4,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from app import activities
-from app.workflows import TASK_QUEUE, KycWorkflow
+from app.workflows import TASK_QUEUE, InvestmentSessionWorkflow, KycWorkflow
 
 
 async def main() -> None:
@@ -12,8 +12,14 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[KycWorkflow],
+        workflows=[InvestmentSessionWorkflow, KycWorkflow],
         activities=[
+            activities.decide_next_step,
+            activities.ask_customer,
+            activities.search_products,
+            activities.get_product_details,
+            activities.check_isa_allowance,
+            activities.present_options,
             activities.verify_identity,
             activities.check_proof_of_address,
             activities.screen_sanctions,

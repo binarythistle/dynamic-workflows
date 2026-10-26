@@ -14,7 +14,7 @@
 ```
 InvestmentSessionWorkflow
   phase 1, explore                   <- the path is dynamic
-  loop: llm_decide (Activity) -> tool call (Activity) -> ...
+  loop: decide_next_step (Activity) -> tool call (Activity) -> ...
         ask_customer = wait for a live typed reply (Update)
   wait for customer acceptance (Update)
   └─ KycWorkflow (child)             <- the guarantees are not
@@ -40,7 +40,7 @@ Planned layout (small, flat):
 ```
 app/
   workflows.py     # InvestmentSessionWorkflow, KycWorkflow
-  activities.py    # llm_decide, tools, KYC steps (stubbed)
+  activities.py    # decide_next_step, tools, KYC steps (stubbed)
   agent.py         # system prompt, tool schemas, guardrail limits
   worker.py
   starter.py       # run customer A / B from the CLI
@@ -78,7 +78,7 @@ affecting anything else.
 | 1 | **Fixed KYC child Workflow** alone, stubbed Activities | Two runs give identical histories | "The bridge": fixed steps |
 | 2 | **Agent loop with a fake rule-based model**, answers typed live at the CLI | Different answers give different tool paths; each step is in history | "The path is dynamic" |
 | 3 | **Join them**: acceptance via Update, then start KYC child | One history: varied start, identical middle | Core hybrid (A vs B side by side) |
-| 4 | **Swap in a real LLM** behind the same `llm_decide` Activity; add guardrails (max turns, tool allowlist, schema for the final proposal) | Real conversation, same shape of history | "Agent chooses, code constrains" |
+| 4 | **Swap in a real LLM** behind the same `decide_next_step` Activity; add guardrails (max turns, tool allowlist, schema for the final proposal) | Real conversation, same shape of history | "Agent chooses, code constrains" |
 | 5 | **Phase 2, get started**: rerun the agent loop after KYC with the phase 2 prompt and tools; `schedule_review` as a durable timer | A and B diverge again after identical KYC; the review timer fires and the agent resumes | Hourglass: "different again on the far side" |
 | 6 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; kill the worker mid-KYC and resume | Resume with no repeated steps | "Durable runtime records every step" |
 | 7 | **Demo polish**: crib sheet of what to type as customers A/B, readable Activity names, README run script, guidance/disclaimer wording reviewed | Recordable end to end in < 2 min | Recording |
@@ -98,7 +98,7 @@ lets us get the loop, live chat and history right without API keys. The real LLM
 1. Acceptance: Temporal Update sent from the CLI (iteration 3).
 2. LLM provider: OpenAI, via the plain `openai` Python SDK with a
    hand-written tool-calling loop (no Agents SDK). Key from `OPENAI_API_KEY`.
-   The `llm_decide` Activity boundary keeps it swappable (iteration 4).
+   The `decide_next_step` Activity boundary keeps it swappable (iteration 4).
 3. Wording: UK. The agent gives guidance, not a personal recommendation
    (FCA advice vs guidance line). On camera, note that rules differ in
    other jurisdictions. Affects prompt and disclaimer text only.
