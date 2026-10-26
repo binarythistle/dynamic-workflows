@@ -1,5 +1,6 @@
 import asyncio
 
+from dotenv import load_dotenv
 from temporalio.client import Client
 from temporalio.worker import Worker
 
@@ -8,6 +9,7 @@ from app.workflows import TASK_QUEUE, InvestmentSessionWorkflow, KycWorkflow
 
 
 async def main() -> None:
+    load_dotenv()  # OPENAI_API_KEY, OPENAI_MODEL, USE_FAKE_MODEL
     client = await Client.connect("localhost:7233")
     worker = Worker(
         client,

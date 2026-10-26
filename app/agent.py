@@ -1,11 +1,15 @@
-"""The agent: its limits and, until iteration 4, a fake rule-based model.
+"""The agent: what it may do, its limits, and the call to the model.
 
-The fake model stands in for an LLM. It reads the conversation so far and
-picks the next tool, so different answers lead to different paths. It runs
-inside the decide_next_step Activity, exactly where the real model will go.
+The model only ever picks the next tool. The Workflow runs that tool, records
+it, and enforces the rules below. That is "agent chooses, code constrains".
 """
 
-import re
+import json
+import os
+
+from openai import AsyncOpenAI
+
+from app.products import PRODUCTS
 
 # Guardrail: on the last turn the agent must present options, so every
 # conversation reaches the handoff.
@@ -16,83 +20,120 @@ DISCLAIMER = (
     "can go down as well as up, and you may get back less than you put in."
 )
 
+SYSTEM_PROMPT = """\
+You are a guidance assistant for a UK investment firm. This is a demo and the
+products are made up.
 
-def fake_decide(history: list[dict], final_turn: bool) -> dict:
-    said = " ".join(h["text"] for h in history if h["role"] == "customer").lower()
-    calls = [h for h in history if h["role"] == "agent"]
-    tools_used = [c["tool"] for c in calls]
-    results = [h for h in history if h["role"] == "tool"]
+You give general guidance, not a personal recommendation or regulated financial
+advice. Your job is to help the customer understand which of the firm's
+products may be worth considering. The customer makes the choice.
 
-    found = next((r["result"] for r in results if r["tool"] == "search_products"), [])
-    details = [r["result"] for r in results if r["tool"] == "get_product_details"]
+- Ask short clarifying questions with ask_customer, one at a time: what the
+  money is for, how long it can be invested, how they feel about falls in
+  value, and whether they may need access to it. Ask only what you need.
+- Use search_products and get_product_details to find and understand options.
+  Only check the ISA allowance if an ISA is being considered.
+- Finish with present_options: one to three products from your search results,
+  with a plain-English explanation of the trade-offs and risks of each. Do not
+  say which one they should choose.
+- Never promise returns. Keep every message to one to three sentences.
+"""
 
-    if final_turn:
-        return present(details or found)
-
-    # 1. Always start with the time horizon.
-    if "ask_customer" not in tools_used:
-        return ask("How long are you thinking of investing for, and what is the money for?")
-
-    years = parse_years(said)
-    short_term = years is not None and years < 5
-
-    # 2. The second question depends on the first answer.
-    if tools_used.count("ask_customer") == 1:
-        if short_term:
-            return ask("Might you need to take money out at short notice, "
-                       "or could it be locked away for a while?")
-        return ask("Investments rise and fall. How would you feel if yours "
-                   "dropped by 20% in a bad year?")
-
-    # 3. Search with what we have learned.
-    if "search_products" not in tools_used:
-        return call("search_products", {
-            "risk_level": "low" if short_term else parse_risk(said),
-            "horizon_years": years if years is not None else 5,
-            "needs_access": short_term and "lock" not in said,
-        })
-
-    # 4. Only check the ISA allowance if an ISA is on the table.
-    if any(p["isa"] for p in found) and "check_isa_allowance" not in tools_used:
-        return call("check_isa_allowance", {})
-
-    # 5. Look at each candidate in detail.
-    detailed = {d["id"] for d in details}
-    for product in found:
-        if product["id"] not in detailed:
-            return call("get_product_details", {"product_id": product["id"]})
-
-    return present(details)
+PRODUCT_IDS = [p["id"] for p in PRODUCTS]
 
 
-def parse_years(text: str) -> int | None:
-    match = re.search(r"(\d+)\s*(years?|yrs?)", text)
-    if match:
-        return int(match.group(1))
-    if re.search(r"\bmonths?\b", text):
-        return 0
+def function(name: str, description: str, properties: dict) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "strict": True,  # the model's arguments must match this schema
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+TOOL_SCHEMAS = [
+    function("ask_customer", "Ask the customer one clarifying question.", {
+        "question": {"type": "string"},
+    }),
+    function("search_products", "Find products matching the customer's needs.", {
+        "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "horizon_years": {"type": "integer"},
+        "needs_access": {"type": "boolean", "description": "May need the money at short notice"},
+    }),
+    function("get_product_details", "Get the full description, risk and fees of a product.", {
+        "product_id": {"type": "string", "enum": PRODUCT_IDS},
+    }),
+    function("check_isa_allowance", "Check how much of this year's ISA allowance is left.", {}),
+    function("present_options", "Present one to three options to the customer. Ends the conversation.", {
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string", "enum": PRODUCT_IDS},
+                    "name": {"type": "string"},
+                },
+                "required": ["product_id", "name"],
+                "additionalProperties": False,
+            },
+        },
+        "explanation": {"type": "string", "description": "Trade-offs and risks, in plain English"},
+    }),
+]
+
+
+def check_tool_call(tool: str, args: dict, history: list[dict]) -> str | None:
+    """Rules the model cannot break. Returns an error to send back, or None."""
+    if tool not in [t["function"]["name"] for t in TOOL_SCHEMAS]:
+        return f"Unknown tool: {tool}"
+    if tool == "present_options":
+        searches = [h["result"] for h in history
+                    if h["role"] == "tool" and h["tool"] == "search_products"]
+        found = {p["id"] for result in searches for p in result}
+        if not 1 <= len(args["options"]) <= 3:
+            return "Present between one and three options."
+        if any(o["product_id"] not in found for o in args["options"]):
+            return "Only present products returned by search_products."
     return None
 
 
-def parse_risk(text: str) -> str:
-    if re.search(r"worried|nervous|panic|sell|not happy|upset|lose sleep", text):
-        return "low"
-    if re.search(r"fine|ok|okay|comfortable|relaxed|happy|don't mind|ride it out", text):
-        return "high"
-    return "medium"
+async def openai_decide(history: list[dict], final_turn: bool) -> dict:
+    response = await AsyncOpenAI().chat.completions.create(
+        model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+        messages=to_openai_messages(history),
+        tools=TOOL_SCHEMAS,
+        parallel_tool_calls=False,
+        # Always call a tool; on the last turn, it must be present_options.
+        tool_choice={"type": "function", "function": {"name": "present_options"}}
+        if final_turn else "required",
+    )
+    call = response.choices[0].message.tool_calls[0].function
+    return {"tool": call.name, "args": json.loads(call.arguments)}
 
 
-def ask(question: str) -> dict:
-    return call("ask_customer", {"question": question})
-
-
-def present(products: list[dict]) -> dict:
-    return call("present_options", {
-        "options": [{"product_id": p["id"], "name": p["name"]} for p in products],
-        "explanation": "Based on what you've told me, these options may be worth "
-                       "considering. The choice is yours.",
-    })
-
-
-def call(tool: str, args: dict) -> dict:
-    return {"tool": tool, "args": args}
+def to_openai_messages(history: list[dict]) -> list[dict]:
+    """Translate the Workflow's history into OpenAI's chat format."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    call_id = None
+    for i, h in enumerate(history):
+        if h["role"] == "customer":
+            messages.append({"role": "user", "content": h["text"]})
+        elif h["role"] == "agent":
+            call_id = f"call_{i}"
+            messages.append({"role": "assistant", "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": h["tool"], "arguments": json.dumps(h["args"])},
+            }]})
+        elif h["role"] == "tool":
+            messages.append({"role": "tool", "tool_call_id": call_id,
+                             "content": json.dumps(h["result"])})
+    return messages

@@ -16,13 +16,13 @@ with workflow.unsafe.imports_passed_through():
         search_products,
         verify_identity,
     )
-    from app.agent import DISCLAIMER, MAX_TURNS
+    from app.agent import DISCLAIMER, MAX_TURNS, check_tool_call
     from app.models import AgentReply, Customer, KycInput
 
 TASK_QUEUE = "investment-demo"
 TIMEOUT = timedelta(seconds=30)
 
-# The only tools the agent may call. Anything else is refused.
+# The only tools the agent may call.
 TOOLS = {
     "ask_customer": ask_customer,
     "search_products": search_products,
@@ -59,8 +59,10 @@ class InvestmentSessionWorkflow:
             self.history.append({"role": "agent", **decision})
             tool, args = decision["tool"], decision["args"]
 
-            if tool not in TOOLS:
-                self.history.append({"role": "tool", "tool": tool, "result": "Unknown tool"})
+            # Code constrains: a call that breaks the rules goes back to the agent.
+            error = check_tool_call(tool, args, self.history)
+            if error:
+                self.history.append({"role": "tool", "tool": tool, "result": error})
                 continue
 
             result = await workflow.execute_activity(
@@ -75,6 +77,11 @@ class InvestmentSessionWorkflow:
                 self.options = args["options"]
                 self.reply(format_options(args), finished=True)
                 break
+
+        if not self.options:
+            self.reply("Sorry, I couldn't find suitable options this time.", finished=True)
+            await workflow.wait_condition(workflow.all_handlers_finished)
+            return []
 
         # 2. The handoff: the customer, not the agent, makes the choice.
         workflow.set_current_details("Waiting for the customer to choose an option")

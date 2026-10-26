@@ -1,17 +1,22 @@
+import os
+
 from temporalio import activity
 
-from app.agent import fake_decide
+from app.agent import openai_decide
+from app.fake_model import fake_decide
 from app.models import KycInput
 from app.products import PRODUCTS
 
 RISK_ORDER = ["low", "medium", "high"]
 
-# --- The agent's "brain". Iteration 4 swaps the fake model for a real LLM. ---
+# --- The agent's "brain": one model call that picks the next tool. ---
 
 
 @activity.defn
 async def decide_next_step(history: list[dict], final_turn: bool) -> dict:
-    return fake_decide(history, final_turn)
+    if os.environ.get("USE_FAKE_MODEL") == "1":
+        return fake_decide(history, final_turn)
+    return await openai_decide(history, final_turn)
 
 
 # --- Agent tools. The agent can look and talk, but cannot change anything. ---
