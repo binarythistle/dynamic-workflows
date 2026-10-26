@@ -1,7 +1,7 @@
 import asyncio
 import sys
 
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowUpdateFailedError
 from temporalio.common import WorkflowIDConflictPolicy
 
 from app.models import Customer
@@ -28,6 +28,23 @@ async def main() -> None:
         print(f"\nAgent: {reply.text}\n")
         if reply.finished:
             break
+
+    # The handoff: the customer chooses; the agent cannot.
+    while True:
+        try:
+            choice = int(input("Which option would you like? (number): "))
+            confirmation = await session.execute_update(
+                InvestmentSessionWorkflow.accept_option, choice
+            )
+            break
+        except ValueError:
+            print("Please type a number.")
+        except WorkflowUpdateFailedError as err:
+            print(err.cause.message)
+    print(f"\nAgent: {confirmation}\n")
+
+    for step in await session.result():
+        print(f"  ✓ {step}")
 
 
 if __name__ == "__main__":

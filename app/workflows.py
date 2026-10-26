@@ -34,16 +34,18 @@ TOOLS = {
 
 @workflow.defn
 class InvestmentSessionWorkflow:
-    """The dynamic part. The agent chooses which tool to use next."""
+    """The agent chooses the path; once the customer accepts, KYC runs as fixed steps."""
 
     def __init__(self) -> None:
         self.history: list[dict] = []
         self.customer_message: str | None = None
         self.agent_replies: list[AgentReply] = []
+        self.options: list[dict] = []
+        self.accepted: dict | None = None
 
     @workflow.run
-    async def run(self, customer: Customer) -> list[dict]:
-        options: list[dict] = []
+    async def run(self, customer: Customer) -> list[str]:
+        # 1. Dynamic: the agent explores options with the customer.
         await self.wait_for_customer()
 
         for turn in range(MAX_TURNS):
@@ -70,12 +72,23 @@ class InvestmentSessionWorkflow:
                 self.reply(args["question"])
                 await self.wait_for_customer()
             elif tool == "present_options":
-                options = args["options"]
+                self.options = args["options"]
                 self.reply(format_options(args), finished=True)
                 break
 
+        # 2. The handoff: the customer, not the agent, makes the choice.
+        workflow.set_current_details("Waiting for the customer to choose an option")
+        await workflow.wait_condition(lambda: self.accepted is not None)
+
+        # 3. Fixed: the same KYC child Workflow for every customer.
+        kyc_steps = await workflow.execute_child_workflow(
+            KycWorkflow.run,
+            KycInput(customer, self.accepted["name"]),
+            id=f"kyc-{customer.customer_id}",
+            static_summary=f"Fixed KYC and account opening: {self.accepted['name']}",
+        )
         await workflow.wait_condition(workflow.all_handlers_finished)
-        return options
+        return kyc_steps
 
     @workflow.update
     async def customer_says(self, text: str) -> AgentReply:
@@ -84,6 +97,22 @@ class InvestmentSessionWorkflow:
         replies_so_far = len(self.agent_replies)
         await workflow.wait_condition(lambda: len(self.agent_replies) > replies_so_far)
         return self.agent_replies[-1]
+
+    @workflow.update
+    async def accept_option(self, choice: int) -> str:
+        """The customer picks one of the presented options by number."""
+        self.accepted = self.options[choice - 1]
+        return f"You chose the {self.accepted['name']}. Starting account opening and KYC."
+
+    @accept_option.validator
+    def validate_choice(self, choice: int) -> None:
+        # Rejected before it reaches the Workflow history.
+        if not self.options:
+            raise ValueError("No options have been presented yet")
+        if self.accepted is not None:
+            raise ValueError("An option has already been accepted")
+        if not 1 <= choice <= len(self.options):
+            raise ValueError(f"Choose a number from 1 to {len(self.options)}")
 
     async def wait_for_customer(self) -> None:
         workflow.set_current_details("Waiting for the customer to reply")
