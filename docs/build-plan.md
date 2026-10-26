@@ -19,7 +19,8 @@ InvestmentSessionWorkflow
   wait for customer acceptance (Update)
   └─ KycWorkflow (child)             <- the guarantees are not
        verify_identity -> proof_of_address (wait for doc)
-       -> sanctions_screen -> [compliance review if flagged] -> consent -> open_account
+       -> sanctions_screen -> [compliance review if flagged]
+       -> consent (customer agrees to fixed terms text) -> open_account
   phase 2, get started               <- dynamic again
   same agent loop, different prompt and tools
 ```
@@ -80,7 +81,7 @@ affecting anything else.
 | 3 | **Join them**: acceptance via Update, then start KYC child | One history: varied start, identical middle | Core hybrid (A vs B side by side) |
 | 4 | **Swap in a real LLM** behind the same `decide_next_step` Activity; add guardrails (max turns, tool allowlist, schema for the final proposal) | Real conversation, same shape of history | "Agent chooses, code constrains" |
 | 5 | **Phase 2, get started**: rerun the agent loop after KYC with the phase 2 prompt and tools; `schedule_review` as a durable timer | A and B diverge again after identical KYC; the review timer fires and the agent resumes | Hourglass: "different again on the far side" |
-| 6 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; kill the worker mid-KYC and resume | Resume with no repeated steps | "Durable runtime records every step" |
+| 6 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; consent as real customer input (fixed terms text shown at the CLI, customer types "I agree" via Update, recorded verbatim); kill the worker mid-KYC and resume | Resume with no repeated steps; consent text identical for every customer | "Durable runtime records every step" |
 | 7 | **Demo polish**: crib sheet of what to type as customers A/B, readable Activity names, README run script, guidance/disclaimer wording reviewed | Recordable end to end in < 2 min | Recording |
 
 Why this order: the fixed part comes first because it is the easy,
