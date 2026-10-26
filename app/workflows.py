@@ -4,7 +4,7 @@ from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
     from app import activities
-    from app.agent import DISCLAIMER, MAX_TURNS, PHASES, check_tool_call
+    from app.agent import MAX_TURNS, PHASES, check_tool_call, disclaimer
     from app.models import ComplianceDecision, Customer, KycInput, KycResult, Message, Turn
 
 TASK_QUEUE = "investment-demo"
@@ -15,10 +15,10 @@ DEMO_SECONDS_PER_MONTH = 2  # a 12-month review fires after 24 seconds
 TERMS_VERSION = "2026-10"
 TERMS = """\
 Terms for opening your account (version 2026-10, demo only)
-  1. This is an execution-only account. We have given you general guidance,
-     not a personal recommendation.
-  2. The value of investments can go down as well as up, and you may get
-     back less than you put in.
+  1. You chose this product yourself. We gave you general guidance, not a
+     personal recommendation.
+  2. If you chose an investment, its value can go down as well as up, and
+     you may get back less than you put in.
   3. You can cancel within 14 days of opening the account."""
 
 # Every tool the agent could call. Each phase allows only some of them.
@@ -245,7 +245,7 @@ def describe(tool: str, args: dict) -> str:
 def format_options(args: dict) -> str:
     lines = [args["explanation"]]
     lines += [f"  {i}. {o['name']}" for i, o in enumerate(args["options"], 1)]
-    lines.append(DISCLAIMER)
+    lines.append(disclaimer([o["product_id"] for o in args["options"]]))
     return "\n".join(lines)
 
 

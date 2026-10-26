@@ -21,6 +21,8 @@ async def main() -> None:
         task_queue=TASK_QUEUE,
         id_conflict_policy=WorkflowIDConflictPolicy.TERMINATE_EXISTING,  # easy retakes
     )
+    print("Demo only, with made-up products. The agent gives general guidance, not")
+    print("financial advice (UK wording; rules differ elsewhere).\n")
     print("Tell the agent what you'd like to do with your money.\n")
 
     turn = Turn([], "message")

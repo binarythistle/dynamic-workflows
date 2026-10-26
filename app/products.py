@@ -2,6 +2,7 @@
 PRODUCTS = [
     {
         "id": "cash-isa",
+        "savings": True,  # a savings account, not an investment
         "name": "Easy Access Cash ISA",
         "risk": "low",
         "min_years": 0,
@@ -15,6 +16,7 @@ PRODUCTS = [
     },
     {
         "id": "fixed-saver",
+        "savings": True,  # a savings account, not an investment
         "name": "2-Year Fixed Saver",
         "risk": "low",
         "min_years": 2,
@@ -27,6 +29,7 @@ PRODUCTS = [
     },
     {
         "id": "bond-fund",
+        "savings": False,  # an investment
         "name": "Bond Fund",
         "risk": "medium",
         "min_years": 3,
@@ -39,6 +42,7 @@ PRODUCTS = [
     },
     {
         "id": "balanced-fund",
+        "savings": False,  # an investment
         "name": "Balanced Multi-Asset Fund",
         "risk": "medium",
         "min_years": 5,
@@ -51,6 +55,7 @@ PRODUCTS = [
     },
     {
         "id": "global-index",
+        "savings": False,  # an investment
         "name": "Global Shares Index Fund",
         "risk": "high",
         "min_years": 10,

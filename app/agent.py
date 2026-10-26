@@ -19,17 +19,25 @@ from app.products import PRODUCTS
 # conversation reaches the handoff.
 MAX_TURNS = 12
 
-DISCLAIMER = (
-    "This is general guidance, not personal advice. The value of investments "
-    "can go down as well as up, and you may get back less than you put in."
-)
+GUIDANCE = "This is general guidance, not a personal recommendation."
+INVESTMENT_RISK = ("The value of investments can go down as well as up, "
+                   "and you may get back less than you put in.")
+SAVINGS_RISK = ("Savings accounts don't fall in value, but inflation can reduce "
+                "what your money buys over time.")
+
+
+def disclaimer(product_ids: list[str]) -> str:
+    """Risk wording that matches what was actually offered."""
+    savings_only = all(p["savings"] for p in PRODUCTS if p["id"] in product_ids)
+    return f"{GUIDANCE} {SAVINGS_RISK if savings_only else INVESTMENT_RISK}"
 
 BASE_PROMPT = """\
 You are a guidance assistant for a UK investment firm. This is a demo and the
 products are made up.
 
 You give general guidance, not a personal recommendation or regulated financial
-advice. The customer makes their own choices. Never promise returns. Keep every
+advice. The customer makes their own choices. Never describe a product as
+suitable, right for them or recommended, and never promise returns. Keep every
 message to one to three sentences, and ask one question at a time.
 """
 
