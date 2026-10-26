@@ -14,6 +14,14 @@ class KycInput:
 
 
 @dataclass
-class AgentReply:
+class Message:
+    sender: str  # "Agent", "KYC" or "Timer"
     text: str
-    finished: bool  # True once the agent has presented its options
+
+
+@dataclass
+class Turn:
+    """What the customer sees after each input, and what to send next."""
+
+    messages: list[Message]
+    expecting: str  # "message", "choice" or "done"

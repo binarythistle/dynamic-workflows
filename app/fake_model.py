@@ -7,7 +7,20 @@ answers still lead to different paths. Turn it on with USE_FAKE_MODEL=1.
 import re
 
 
-def fake_decide(history: list[dict], final_turn: bool) -> dict:
+def fake_decide(phase: str, history: list[dict], final_turn: bool) -> dict:
+    # Each phase only looks at the conversation since its own start.
+    notes = [i for i, h in enumerate(history) if h["role"] == "note"]
+    recent = history[notes[-1]:] if notes else history
+    match phase:
+        case "explore":
+            return explore(recent, final_turn)
+        case "get_started":
+            return get_started(history, recent, final_turn)
+        case "review":
+            return review(recent)
+
+
+def explore(history: list[dict], final_turn: bool) -> dict:
     said = " ".join(h["text"] for h in history if h["role"] == "customer").lower()
     calls = [h for h in history if h["role"] == "agent"]
     tools_used = [c["tool"] for c in calls]
@@ -55,6 +68,54 @@ def fake_decide(history: list[dict], final_turn: bool) -> dict:
     return present(details)
 
 
+def get_started(history: list[dict], recent: list[dict], final_turn: bool) -> dict:
+    replies = [h["text"].lower() for h in recent if h["role"] == "customer"]
+    tools_used = [h["tool"] for h in recent if h["role"] == "agent"]
+    product_id = re.search(r"product_id: ([\w-]+)", recent[0]["text"]).group(1)
+
+    if final_turn:
+        return end("You're all set. You can change your payments at any time.")
+
+    if "ask_customer" not in tools_used:
+        return ask("Would you like to pay in a one-off amount, or set up regular monthly payments?")
+
+    monthly = re.search(r"month|regular", replies[0]) is not None
+    if "suggest_contribution_plan" not in tools_used:
+        everything_said = " ".join(h["text"] for h in history if h["role"] == "customer")
+        return call("suggest_contribution_plan", {
+            "amount": parse_amount(replies[0]) or parse_amount(everything_said) or 100,
+            "frequency": "monthly" if monthly else "one-off",
+        })
+
+    # Only regular savers are offered a review.
+    if monthly and tools_used.count("ask_customer") == 1:
+        return ask("Would you like me to book a review in 12 months to see how it's going?")
+    if (monthly and "schedule_review" not in tools_used
+            and re.search(r"\b(yes|yeah|sure|please|ok)\b", replies[-1])):
+        return call("schedule_review", {"months": 12})
+
+    if "get_account_summary" not in tools_used:
+        return call("get_account_summary", {"product_id": product_id})
+
+    return end("You're all set. You can change your payments or get in touch at any time.")
+
+
+def review(recent: list[dict]) -> dict:
+    summary = next((h["result"] for h in recent if h["role"] == "tool"
+                    and h["tool"] == "get_account_summary"), None)
+    if summary is None:
+        product_id = re.search(r"product_id: ([\w-]+)", recent[0]["text"]).group(1)
+        return call("get_account_summary", {"product_id": product_id})
+    return end(f"Hello again! It's time for your review. You hold the {summary['product']}, "
+               f"with fees of {summary['fees']}. You can change your payments or get in "
+               "touch at any time.")
+
+
+def parse_amount(text: str) -> int | None:
+    match = re.search(r"£\s?([\d,]+)", text)
+    return int(match.group(1).replace(",", "")) if match else None
+
+
 def parse_years(text: str) -> int | None:
     match = re.search(r"(\d+)\s*(years?|yrs?)", text)
     if match:
@@ -82,6 +143,10 @@ def present(products: list[dict]) -> dict:
         "explanation": "Based on what you've told me, these options may be worth "
                        "considering. The choice is yours.",
     })
+
+
+def end(message: str) -> dict:
+    return call("end_conversation", {"message": message})
 
 
 def call(tool: str, args: dict) -> dict:

@@ -67,6 +67,10 @@ is always reached however the conversation goes.
 | `get_account_summary()` | Holdings, amount paid in, costs |
 | `suggest_contribution_plan(amount, frequency)` | Lump sum vs monthly, as guidance |
 | `schedule_review(months)` | Durable timer for a later check-in (months shortened to seconds for the demo) |
+| `end_conversation(message)` | Ends the phase with a closing message |
+
+When the review timer fires, a short third phase (`review`: `get_account_summary`,
+`end_conversation`) sends the customer a check-in message.
 
 Phase 2 is optional: if the video runs long, it can be cut without
 affecting anything else.

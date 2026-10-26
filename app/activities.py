@@ -13,10 +13,10 @@ RISK_ORDER = ["low", "medium", "high"]
 
 
 @activity.defn
-async def decide_next_step(history: list[dict], final_turn: bool) -> dict:
+async def decide_next_step(phase: str, history: list[dict], final_turn: bool) -> dict:
     if os.environ.get("USE_FAKE_MODEL") == "1":
-        return fake_decide(history, final_turn)
-    return await openai_decide(history, final_turn)
+        return fake_decide(phase, history, final_turn)
+    return await openai_decide(phase, history, final_turn)
 
 
 # --- Agent tools. The agent can look and talk, but cannot change anything. ---
@@ -55,6 +55,37 @@ async def get_product_details(args: dict) -> dict:
 @activity.defn
 async def check_isa_allowance(args: dict) -> dict:
     return {"annual_allowance": 20_000, "used_this_tax_year": 4_000, "remaining": 16_000}
+
+
+@activity.defn
+async def get_account_summary(args: dict) -> dict:
+    product = next(p for p in PRODUCTS if p["id"] == args["product_id"])
+    return {"product": product["name"], "status": "open",
+            "risk": product["risk"], "fees": product["fees"]}
+
+
+@activity.defn
+async def suggest_contribution_plan(args: dict) -> dict:
+    amount, monthly = args["amount"], args["frequency"] == "monthly"
+    return {
+        "amount": amount,
+        "frequency": args["frequency"],
+        "total_first_year": amount * 12 if monthly else amount,
+        "note": "Regular payments spread your buying over time, which smooths out ups and downs."
+        if monthly else
+        "A one-off payment is invested straight away, so it is exposed to rises and falls straight away.",
+    }
+
+
+@activity.defn
+async def schedule_review(args: dict) -> str:
+    # The Workflow holds the review as a durable timer; this just confirms it.
+    return f"Review booked in {args['months']} months"
+
+
+@activity.defn
+async def end_conversation(args: dict) -> str:
+    return "Message sent"
 
 
 # --- KYC steps. Stubbed: a real system would call identity, address and ---

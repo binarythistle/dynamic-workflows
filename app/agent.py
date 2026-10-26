@@ -2,6 +2,9 @@
 
 The model only ever picks the next tool. The Workflow runs that tool, records
 it, and enforces the rules below. That is "agent chooses, code constrains".
+
+The same agent loop runs in three phases. Each phase has its own prompt, its
+own tools, and a tool that must end it.
 """
 
 import json
@@ -20,13 +23,18 @@ DISCLAIMER = (
     "can go down as well as up, and you may get back less than you put in."
 )
 
-SYSTEM_PROMPT = """\
+BASE_PROMPT = """\
 You are a guidance assistant for a UK investment firm. This is a demo and the
 products are made up.
 
 You give general guidance, not a personal recommendation or regulated financial
-advice. Your job is to help the customer understand which of the firm's
-products may be worth considering. The customer makes the choice.
+advice. The customer makes their own choices. Never promise returns. Keep every
+message to one to three sentences, and ask one question at a time.
+"""
+
+EXPLORE_PROMPT = BASE_PROMPT + """
+Help the customer understand which of the firm's products may be worth
+considering.
 
 - Ask short clarifying questions with ask_customer, one at a time: what the
   money is for, how long it can be invested, how they feel about falls in
@@ -36,7 +44,24 @@ products may be worth considering. The customer makes the choice.
 - Finish with present_options: one to three products from your search results,
   with a plain-English explanation of the trade-offs and risks of each. Do not
   say which one they should choose.
-- Never promise returns. Keep every message to one to three sentences.
+"""
+
+GET_STARTED_PROMPT = BASE_PROMPT + """
+The customer has just opened an account (see the latest system note). Help them
+get started in a short conversation.
+
+- Ask whether they would like to pay in a one-off amount or regular monthly
+  payments, then use suggest_contribution_plan to show what that looks like.
+- Use get_account_summary to confirm what they hold and what it costs.
+- Offer to book a review with schedule_review. They may say no.
+- Finish with end_conversation.
+"""
+
+REVIEW_PROMPT = BASE_PROMPT + """
+The customer's review is due (see the latest system note). Use
+get_account_summary, then end_conversation with a short, friendly check-in:
+what they hold, and a reminder that they can change their payments or get in
+touch at any time.
 """
 
 PRODUCT_IDS = [p["id"] for p in PRODUCTS]
@@ -60,6 +85,7 @@ def function(name: str, description: str, properties: dict) -> dict:
 
 
 TOOL_SCHEMAS = [
+    # Phase 1: explore
     function("ask_customer", "Ask the customer one clarifying question.", {
         "question": {"type": "string"},
     }),
@@ -87,13 +113,48 @@ TOOL_SCHEMAS = [
         },
         "explanation": {"type": "string", "description": "Trade-offs and risks, in plain English"},
     }),
+    # Phase 2: get started, and the later review
+    function("get_account_summary", "What the customer holds, its risk and its fees.", {
+        "product_id": {"type": "string", "enum": PRODUCT_IDS},
+    }),
+    function("suggest_contribution_plan", "Show what a payment plan looks like over a year.", {
+        "amount": {"type": "number", "description": "Pounds per payment"},
+        "frequency": {"type": "string", "enum": ["one-off", "monthly"]},
+    }),
+    function("schedule_review", "Book a check-in with the customer a number of months from now.", {
+        "months": {"type": "integer", "description": "1 to 24"},
+    }),
+    function("end_conversation", "Send a closing message. Ends the conversation.", {
+        "message": {"type": "string"},
+    }),
 ]
+SCHEMAS = {t["function"]["name"]: t for t in TOOL_SCHEMAS}
+
+PHASES = {
+    "explore": {
+        "prompt": EXPLORE_PROMPT,
+        "tools": ["ask_customer", "search_products", "get_product_details",
+                  "check_isa_allowance", "present_options"],
+        "last_tool": "present_options",
+    },
+    "get_started": {
+        "prompt": GET_STARTED_PROMPT,
+        "tools": ["ask_customer", "get_account_summary", "suggest_contribution_plan",
+                  "schedule_review", "end_conversation"],
+        "last_tool": "end_conversation",
+    },
+    "review": {
+        "prompt": REVIEW_PROMPT,
+        "tools": ["get_account_summary", "end_conversation"],
+        "last_tool": "end_conversation",
+    },
+}
 
 
-def check_tool_call(tool: str, args: dict, history: list[dict]) -> str | None:
+def check_tool_call(phase: str, tool: str, args: dict, history: list[dict]) -> str | None:
     """Rules the model cannot break. Returns an error to send back, or None."""
-    if tool not in [t["function"]["name"] for t in TOOL_SCHEMAS]:
-        return f"Unknown tool: {tool}"
+    if tool not in PHASES[phase]["tools"]:
+        return f"Tool not available in this phase: {tool}"
     if tool == "present_options":
         searches = [h["result"] for h in history
                     if h["role"] == "tool" and h["tool"] == "search_products"]
@@ -102,29 +163,34 @@ def check_tool_call(tool: str, args: dict, history: list[dict]) -> str | None:
             return "Present between one and three options."
         if any(o["product_id"] not in found for o in args["options"]):
             return "Only present products returned by search_products."
+    if tool == "schedule_review" and not 1 <= args["months"] <= 24:
+        return "A review must be between 1 and 24 months away."
     return None
 
 
-async def openai_decide(history: list[dict], final_turn: bool) -> dict:
+async def openai_decide(phase: str, history: list[dict], final_turn: bool) -> dict:
+    config = PHASES[phase]
     response = await AsyncOpenAI().chat.completions.create(
         model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
-        messages=to_openai_messages(history),
-        tools=TOOL_SCHEMAS,
+        messages=to_openai_messages(config["prompt"], history),
+        tools=[SCHEMAS[name] for name in config["tools"]],
         parallel_tool_calls=False,
-        # Always call a tool; on the last turn, it must be present_options.
-        tool_choice={"type": "function", "function": {"name": "present_options"}}
+        # Always call a tool; on the last turn, it must be the one that ends the phase.
+        tool_choice={"type": "function", "function": {"name": config["last_tool"]}}
         if final_turn else "required",
     )
     call = response.choices[0].message.tool_calls[0].function
     return {"tool": call.name, "args": json.loads(call.arguments)}
 
 
-def to_openai_messages(history: list[dict]) -> list[dict]:
+def to_openai_messages(prompt: str, history: list[dict]) -> list[dict]:
     """Translate the Workflow's history into OpenAI's chat format."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": prompt}]
     call_id = None
     for i, h in enumerate(history):
-        if h["role"] == "customer":
+        if h["role"] == "note":
+            messages.append({"role": "system", "content": h["text"]})
+        elif h["role"] == "customer":
             messages.append({"role": "user", "content": h["text"]})
         elif h["role"] == "agent":
             call_id = f"call_{i}"

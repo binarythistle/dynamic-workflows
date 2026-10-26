@@ -4,7 +4,7 @@ import sys
 from temporalio.client import Client, WorkflowUpdateFailedError
 from temporalio.common import WorkflowIDConflictPolicy
 
-from app.models import Customer
+from app.models import Customer, Turn
 from app.workflows import TASK_QUEUE, InvestmentSessionWorkflow
 
 
@@ -22,29 +22,29 @@ async def main() -> None:
     )
     print("Tell the agent what you'd like to do with your money.\n")
 
-    while True:
-        text = input(f"{name}: ")
-        reply = await session.execute_update(InvestmentSessionWorkflow.customer_says, text)
-        print(f"\nAgent: {reply.text}\n")
-        if reply.finished:
-            break
-
-    # The handoff: the customer chooses; the agent cannot.
-    while True:
+    turn = Turn([], "message")
+    while turn.expecting != "done":
         try:
-            choice = int(input("Which option would you like? (number): "))
-            confirmation = await session.execute_update(
-                InvestmentSessionWorkflow.accept_option, choice
-            )
-            break
+            if turn.expecting == "message":
+                text = input(f"{name}: ")
+                turn = await session.execute_update(InvestmentSessionWorkflow.customer_says, text)
+            else:
+                # The handoff: the customer chooses; the agent cannot.
+                choice = int(input("Which option would you like? (number): "))
+                turn = await session.execute_update(InvestmentSessionWorkflow.accept_option, choice)
         except ValueError:
             print("Please type a number.")
+            continue
         except WorkflowUpdateFailedError as err:
             print(err.cause.message)
-    print(f"\nAgent: {confirmation}\n")
+            continue
+        for message in turn.messages:
+            print(f"\n{message.sender}: {message.text}\n")
 
-    for step in await session.result():
-        print(f"  ✓ {step}")
+    # If a review was booked, the Workflow is now sleeping on a durable timer.
+    review = await session.result()
+    if review:
+        print(f"Agent: {review}\n")
 
 
 if __name__ == "__main__":
