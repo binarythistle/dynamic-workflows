@@ -98,18 +98,22 @@ async def verify_identity(kyc: KycInput) -> str:
 
 
 @activity.defn
-async def check_proof_of_address(kyc: KycInput) -> str:
-    return f"Proof of address accepted for {kyc.customer.name}"
+async def check_proof_of_address(kyc: KycInput, document: str) -> str:
+    return f"Proof of address accepted: {document}"
 
 
 @activity.defn
-async def screen_sanctions(kyc: KycInput) -> str:
-    return f"No sanctions match for {kyc.customer.name}"
+async def screen_sanctions(kyc: KycInput) -> dict:
+    # Mock: common surnames give a possible match, as real screening often does.
+    if "smith" in kyc.customer.name.lower():
+        return {"possible_match": True,
+                "summary": f"Possible sanctions match for {kyc.customer.name}: sent for review"}
+    return {"possible_match": False, "summary": f"No sanctions match for {kyc.customer.name}"}
 
 
 @activity.defn
-async def record_consent(kyc: KycInput) -> str:
-    return f"{kyc.customer.name} consented to the terms for {kyc.product}"
+async def record_consent(kyc: KycInput, terms_version: str, typed: str) -> str:
+    return f'{kyc.customer.name} agreed to terms {terms_version} for {kyc.product}: "{typed}"'
 
 
 @activity.defn

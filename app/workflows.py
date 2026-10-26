@@ -5,11 +5,21 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from app import activities
     from app.agent import DISCLAIMER, MAX_TURNS, PHASES, check_tool_call
-    from app.models import Customer, KycInput, Message, Turn
+    from app.models import ComplianceDecision, Customer, KycInput, KycResult, Message, Turn
 
 TASK_QUEUE = "investment-demo"
 TIMEOUT = timedelta(seconds=30)
 DEMO_SECONDS_PER_MONTH = 2  # a 12-month review fires after 24 seconds
+
+# Fixed wording: every customer sees exactly this text, and agrees to this version.
+TERMS_VERSION = "2026-10"
+TERMS = """\
+Terms for opening your account (version 2026-10, demo only)
+  1. This is an execution-only account. We have given you general guidance,
+     not a personal recommendation.
+  2. The value of investments can go down as well as up, and you may get
+     back less than you put in.
+  3. You can cancel within 14 days of opening the account."""
 
 # Every tool the agent could call. Each phase allows only some of them.
 TOOLS = {
@@ -33,6 +43,9 @@ class InvestmentSessionWorkflow:
         self.history: list[dict] = []
         self.messages: list[Message] = []
         self.expecting: str | None = "message"  # the customer speaks first
+        self.wait_points = 0  # times the Workflow has handed the turn to the customer
+        self.delivered_points = 0
+        self.delivered_messages = 0
         self.customer_message: str | None = None
         self.options: list[dict] = []
         self.accepted: dict | None = None
@@ -41,7 +54,7 @@ class InvestmentSessionWorkflow:
     @workflow.run
     async def run(self, customer: Customer) -> str | None:
         # 1. Dynamic: the agent explores options with the customer.
-        await self.wait_for_customer()
+        await self.wait_for_customer(opening=True)
         proposal = await self.run_agent("explore")
         self.options = proposal["options"]
         if not self.options:
@@ -49,19 +62,23 @@ class InvestmentSessionWorkflow:
         self.post("Agent", format_options(proposal))
 
         # 2. The handoff: the customer, not the agent, makes the choice.
-        self.expecting = "choice"
-        workflow.set_current_details("Waiting for the customer to choose an option")
+        self.wait_point("choice", "Waiting for the customer to choose an option")
         await workflow.wait_condition(lambda: self.accepted is not None)
+        self.expecting = None
 
         # 3. Fixed: the same KYC child Workflow for every customer.
         product = self.accepted
-        kyc_steps = await workflow.execute_child_workflow(
+        kyc = await workflow.start_child_workflow(
             KycWorkflow.run,
             KycInput(customer, product["name"]),
             id=f"kyc-{customer.customer_id}",
             static_summary=f"Fixed KYC and account opening: {product['name']}",
         )
-        self.post("KYC", "Account opening complete\n" + "\n".join(f"  ✓ {s}" for s in kyc_steps))
+        self.wait_point("kyc", "Waiting for KYC and account opening")
+        result: KycResult = await kyc
+        if not result.approved:
+            return await self.finish("Sorry, we weren't able to open your account this time.")
+        self.post("KYC", "Account opening complete\n" + "\n".join(f"  ✓ {s}" for s in result.steps))
 
         # 4. Dynamic again: the agent helps the customer get started.
         self.note(f"KYC is complete. The customer's {product['name']} account "
@@ -75,6 +92,7 @@ class InvestmentSessionWorkflow:
         seconds = self.review_months * DEMO_SECONDS_PER_MONTH
         await self.finish(f"Review booked in {self.review_months} months "
                           f"(demo: {seconds} seconds).", sender="Timer")
+        workflow.set_current_details("Waiting for the customer's review")
         await workflow.sleep(
             timedelta(seconds=seconds),
             summary=f"Wait {self.review_months} months for the customer's review",
@@ -123,9 +141,8 @@ class InvestmentSessionWorkflow:
     @workflow.update
     async def customer_says(self, text: str) -> Turn:
         """The customer types a message; returns what they see next."""
-        seen = len(self.messages)
         self.customer_message = text
-        return await self.next_turn(seen)
+        return await self.next_turn()
 
     @customer_says.validator
     def validate_message(self, text: str) -> None:
@@ -135,9 +152,8 @@ class InvestmentSessionWorkflow:
     @workflow.update
     async def accept_option(self, choice: int) -> Turn:
         """The customer picks one of the presented options by number."""
-        seen = len(self.messages)
         self.accepted = self.options[choice - 1]
-        return await self.next_turn(seen)
+        return await self.next_turn()
 
     @accept_option.validator
     def validate_choice(self, choice: int) -> None:
@@ -147,22 +163,44 @@ class InvestmentSessionWorkflow:
         if not 1 <= choice <= len(self.options):
             raise ValueError(f"Choose a number from 1 to {len(self.options)}")
 
-    async def next_turn(self, seen: int) -> Turn:
-        self.expecting = None
-        await workflow.wait_condition(lambda: self.expecting is not None)
-        return Turn(self.messages[seen:], self.expecting)
+    @workflow.update
+    async def continue_chat(self) -> Turn:
+        """Called by the chat once KYC is done; returns what the customer sees next."""
+        return await self.next_turn()
 
-    async def wait_for_customer(self) -> None:
-        if self.customer_message is None:  # the first message can arrive with the start
-            self.expecting = "message"
-        workflow.set_current_details("Waiting for the customer to reply")
+    async def next_turn(self) -> Turn:
+        # Wait until the Workflow next needs the customer, then hand over
+        # everything posted since the last turn.
+        await workflow.wait_condition(lambda: self.wait_points > self.delivered_points)
+        self.delivered_points = self.wait_points
+        messages = self.messages[self.delivered_messages:]
+        self.delivered_messages = len(self.messages)
+        return Turn(messages, self.expecting)
+
+    def wait_point(self, expecting: str, details: str) -> None:
+        self.expecting = expecting
+        self.wait_points += 1
+        workflow.set_current_details(details)
+
+    async def wait_for_customer(self, opening: bool = False) -> None:
+        if not opening:  # the chat already starts on the customer's turn
+            self.wait_point("message", "Waiting for the customer to reply")
         await workflow.wait_condition(lambda: self.customer_message is not None)
         self.history.append({"role": "customer", "text": self.customer_message})
         self.customer_message = None
+        self.expecting = None
 
     async def finish(self, text: str, sender: str = "Agent") -> None:
         self.post(sender, text)
-        self.expecting = "done"
+        self.wait_point("done", "Conversation finished")
+        try:  # give the chat a moment to collect the last messages
+            await workflow.wait_condition(
+                lambda: self.delivered_points == self.wait_points,
+                timeout=timedelta(minutes=1),
+                timeout_summary="Wait for the chat to collect the last messages",
+            )
+        except TimeoutError:
+            pass
         await workflow.wait_condition(workflow.all_handlers_finished)
 
     def post(self, sender: str, text: str) -> None:
@@ -207,14 +245,83 @@ def format_options(args: dict) -> str:
 
 @workflow.defn
 class KycWorkflow:
-    """The fixed part. Same checks, same order, every customer."""
+    """The fixed part. Same checks, same order, every customer.
+
+    It can wait for days (a document, a human reviewer) and resumes exactly
+    where it stopped, even if every worker restarts in between.
+    """
+
+    def __init__(self) -> None:
+        self.stage = "starting"
+        self.document: str | None = None
+        self.decision: ComplianceDecision | None = None
+        self.consent: str | None = None
 
     @workflow.run
-    async def run(self, kyc: KycInput) -> list[str]:
-        return [
-            await workflow.execute_activity(activities.verify_identity, kyc, start_to_close_timeout=TIMEOUT),
-            await workflow.execute_activity(activities.check_proof_of_address, kyc, start_to_close_timeout=TIMEOUT),
-            await workflow.execute_activity(activities.screen_sanctions, kyc, start_to_close_timeout=TIMEOUT),
-            await workflow.execute_activity(activities.record_consent, kyc, start_to_close_timeout=TIMEOUT),
-            await workflow.execute_activity(activities.open_account, kyc, start_to_close_timeout=TIMEOUT),
-        ]
+    async def run(self, kyc: KycInput) -> KycResult:
+        steps = []
+        self.set_stage("identity check")
+        steps.append(await workflow.execute_activity(
+            activities.verify_identity, kyc, start_to_close_timeout=TIMEOUT))
+
+        self.set_stage("proof of address")  # the document may arrive days later
+        await workflow.wait_condition(lambda: self.document is not None)
+        steps.append(await workflow.execute_activity(
+            activities.check_proof_of_address, args=[kyc, self.document],
+            start_to_close_timeout=TIMEOUT))
+
+        self.set_stage("sanctions screening")
+        screening = await workflow.execute_activity(
+            activities.screen_sanctions, kyc, start_to_close_timeout=TIMEOUT)
+        steps.append(screening["summary"])
+
+        # Fixed does not mean linear: a rule written in advance, not the agent,
+        # sends a possible match to a human.
+        if screening["possible_match"]:
+            self.set_stage("compliance review")
+            await workflow.wait_condition(lambda: self.decision is not None)
+            outcome = "approved" if self.decision.approved else "declined"
+            steps.append(f"Compliance review {outcome} by {self.decision.reviewer}")
+            if not self.decision.approved:
+                self.set_stage("declined")
+                return KycResult(False, steps)
+
+        self.set_stage("consent")
+        await workflow.wait_condition(lambda: self.consent is not None)
+        steps.append(await workflow.execute_activity(
+            activities.record_consent, args=[kyc, TERMS_VERSION, self.consent],
+            start_to_close_timeout=TIMEOUT))
+
+        self.set_stage("opening account")
+        steps.append(await workflow.execute_activity(
+            activities.open_account, kyc, start_to_close_timeout=TIMEOUT))
+        self.set_stage("done")
+        return KycResult(True, steps)
+
+    @workflow.query
+    def current_stage(self) -> str:
+        return self.stage
+
+    @workflow.signal
+    def document_uploaded(self, file_name: str) -> None:
+        self.document = file_name
+
+    @workflow.signal
+    def compliance_decision(self, decision: ComplianceDecision) -> None:
+        self.decision = decision
+
+    @workflow.update
+    def give_consent(self, typed: str) -> str:
+        self.consent = typed
+        return "Consent recorded"
+
+    @give_consent.validator
+    def validate_consent(self, typed: str) -> None:
+        if self.stage != "consent":
+            raise ValueError("Consent isn't needed yet")
+        if typed.strip().lower() != "i agree":
+            raise ValueError('Type "I agree" to accept the terms')
+
+    def set_stage(self, stage: str) -> None:
+        self.stage = stage
+        workflow.set_current_details(f"KYC: {stage}")

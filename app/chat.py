@@ -1,11 +1,12 @@
 import asyncio
 import sys
 
-from temporalio.client import Client, WorkflowUpdateFailedError
+from temporalio.client import Client, WorkflowHandle, WorkflowUpdateFailedError
 from temporalio.common import WorkflowIDConflictPolicy
+from temporalio.service import RPCError
 
 from app.models import Customer, Turn
-from app.workflows import TASK_QUEUE, InvestmentSessionWorkflow
+from app.workflows import TASK_QUEUE, TERMS, InvestmentSessionWorkflow, KycWorkflow
 
 
 async def main() -> None:
@@ -28,10 +29,13 @@ async def main() -> None:
             if turn.expecting == "message":
                 text = input(f"{name}: ")
                 turn = await session.execute_update(InvestmentSessionWorkflow.customer_says, text)
-            else:
+            elif turn.expecting == "choice":
                 # The handoff: the customer chooses; the agent cannot.
                 choice = int(input("Which option would you like? (number): "))
                 turn = await session.execute_update(InvestmentSessionWorkflow.accept_option, choice)
+            elif turn.expecting == "kyc":
+                await kyc_steps(client.get_workflow_handle(f"kyc-{customer.customer_id}"), customer)
+                turn = await session.execute_update(InvestmentSessionWorkflow.continue_chat)
         except ValueError:
             print("Please type a number.")
             continue
@@ -45,6 +49,48 @@ async def main() -> None:
     review = await session.result()
     if review:
         print(f"Agent: {review}\n")
+
+
+async def kyc_steps(kyc: WorkflowHandle, customer: Customer) -> None:
+    """Follow the fixed KYC Workflow, prompting the customer when it needs them."""
+    print("\nKYC: Starting account opening and KYC checks.\n")
+    seen = set()
+    while True:
+        try:
+            stage = await kyc.query(KycWorkflow.current_stage)
+        except RPCError:
+            await asyncio.sleep(1)  # no worker running right now; keep waiting
+            continue
+        if stage in ("done", "declined"):
+            return
+        if stage not in seen:
+            seen.add(stage)
+            if stage == "proof of address":
+                document = input("KYC: Upload proof of address (type a file name), "
+                                 "or press Enter to send it later: ").strip()
+                if document:
+                    await kyc.signal(KycWorkflow.document_uploaded, document)
+                else:
+                    print("KYC: Waiting for your document. Send it later with:\n"
+                          f"       uv run python -m app.upload {customer.customer_id} <file>\n")
+            elif stage == "compliance review":
+                print("KYC: Your application needs a quick check by our compliance team.\n"
+                      "     Reviewer: uv run python -m app.review "
+                      f"{customer.customer_id} approve|decline\n")
+            elif stage == "consent":
+                await give_consent(kyc)
+        await asyncio.sleep(0.5)
+
+
+async def give_consent(kyc: WorkflowHandle) -> None:
+    print(f"\n{TERMS}\n")
+    while True:
+        typed = input('KYC: Type "I agree" to accept these terms: ')
+        try:
+            await kyc.execute_update(KycWorkflow.give_consent, typed)
+            return
+        except WorkflowUpdateFailedError as err:
+            print(err.cause.message)
 
 
 if __name__ == "__main__":
