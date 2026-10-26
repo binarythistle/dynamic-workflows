@@ -52,22 +52,27 @@ async def get_product_details(args: dict) -> dict:
     return next(p for p in PRODUCTS if p["id"] == args["product_id"])
 
 
+ISA_ALLOWANCE = {"annual_allowance": 20_000, "used_this_tax_year": 4_000, "remaining": 16_000}
+
+
 @activity.defn
 async def check_isa_allowance(args: dict) -> dict:
-    return {"annual_allowance": 20_000, "used_this_tax_year": 4_000, "remaining": 16_000}
+    return ISA_ALLOWANCE
 
 
 @activity.defn
 async def get_account_summary(args: dict) -> dict:
     product = next(p for p in PRODUCTS if p["id"] == args["product_id"])
-    return {"product": product["name"], "status": "open",
-            "risk": product["risk"], "fees": product["fees"]}
+    return {"product": product["name"], "status": "open", "risk": product["risk"],
+            "fees": product["fees"], "isa": product["isa"],
+            "allows_top_ups": product["allows_top_ups"]}
 
 
 @activity.defn
 async def suggest_contribution_plan(args: dict) -> dict:
     amount, monthly = args["amount"], args["frequency"] == "monthly"
-    return {
+    product = next(p for p in PRODUCTS if p["id"] == args["product_id"])
+    plan = {
         "amount": amount,
         "frequency": args["frequency"],
         "total_first_year": amount * 12 if monthly else amount,
@@ -75,6 +80,22 @@ async def suggest_contribution_plan(args: dict) -> dict:
         if monthly else
         "A one-off payment is invested straight away, so it is exposed to rises and falls straight away.",
     }
+    # An exact rule, so it is checked in code rather than left to the model.
+    remaining = ISA_ALLOWANCE["remaining"]
+    if product["isa"] and plan["total_first_year"] > remaining:
+        plan["warning"] = (f"£{plan['total_first_year']:,.0f} this year is over the remaining "
+                           f"ISA allowance of £{remaining:,}. Tell the customer.")
+    return plan
+
+
+@activity.defn
+async def set_maturity_instruction(args: dict) -> str:
+    return f"At the end of the term: {args['option']}"
+
+
+@activity.defn
+async def send_guide(args: dict) -> str:
+    return f"Guide sent: {args['topic']}"
 
 
 @activity.defn

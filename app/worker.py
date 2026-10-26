@@ -24,6 +24,8 @@ async def main() -> None:
             activities.present_options,
             activities.get_account_summary,
             activities.suggest_contribution_plan,
+            activities.set_maturity_instruction,
+            activities.send_guide,
             activities.schedule_review,
             activities.end_conversation,
             activities.verify_identity,

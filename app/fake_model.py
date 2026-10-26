@@ -70,34 +70,87 @@ def explore(history: list[dict], final_turn: bool) -> dict:
 
 def get_started(history: list[dict], recent: list[dict], final_turn: bool) -> dict:
     replies = [h["text"].lower() for h in recent if h["role"] == "customer"]
+    everything_said = " ".join(h["text"] for h in history if h["role"] == "customer").lower()
     tools_used = [h["tool"] for h in recent if h["role"] == "agent"]
+    results = {h["tool"]: h["result"] for h in recent if h["role"] == "tool"}
     product_id = re.search(r"product_id: ([\w-]+)", recent[0]["text"]).group(1)
+    questions = [h["args"]["question"] for h in recent
+                 if h["role"] == "agent" and h["tool"] == "ask_customer"]
+
+    def asked(text: str) -> bool:
+        return any(text in q for q in questions)
+
+    def answer_to(text: str) -> str:
+        i = next(i for i, q in enumerate(questions) if text in q)
+        return replies[i] if i < len(replies) else ""
 
     if final_turn:
-        return end("You're all set. You can change your payments at any time.")
+        return end("You're all set. You can get in touch at any time.")
 
-    if "ask_customer" not in tools_used:
-        return ask("Would you like to pay in a one-off amount, or set up regular monthly payments?")
-
-    monthly = re.search(r"month|regular", replies[0]) is not None
-    if "suggest_contribution_plan" not in tools_used:
-        everything_said = " ".join(h["text"] for h in history if h["role"] == "customer")
-        return call("suggest_contribution_plan", {
-            "amount": parse_amount(replies[0]) or parse_amount(everything_said) or 100,
-            "frequency": "monthly" if monthly else "one-off",
-        })
-
-    # Only regular savers are offered a review.
-    if monthly and tools_used.count("ask_customer") == 1:
-        return ask("Would you like me to book a review in 12 months to see how it's going?")
-    if (monthly and "schedule_review" not in tools_used
-            and re.search(r"\b(yes|yeah|sure|please|ok)\b", replies[-1])):
-        return call("schedule_review", {"months": 12})
-
+    # 1. See what the product allows; that decides the rest of the path.
     if "get_account_summary" not in tools_used:
         return call("get_account_summary", {"product_id": product_id})
+    summary = results["get_account_summary"]
 
-    return end("You're all set. You can change your payments or get in touch at any time.")
+    # 2. A worried customer gets a guide before anything else.
+    if (re.search(r"worried|nervous|unsure|not good|uncomfortable|first time|new to",
+                  everything_said)
+            and "send_guide" not in tools_used):
+        return call("send_guide", {"topic": "what happens when markets fall"})
+
+    # 3a. Fixed term: no more payments, so ask about the end of the term instead.
+    if not summary["allows_top_ups"]:
+        if not asked("fixed for two years"):
+            return ask("This account is fixed for two years. When it ends, would you like the "
+                       "money paid out to your bank, moved to an Easy Access Cash ISA, "
+                       "or to decide later?")
+        if "set_maturity_instruction" not in tools_used:
+            answer = replies[-1]
+            option = ("pay out to bank account" if re.search(r"pay|bank", answer)
+                      else "move to Easy Access Cash ISA" if re.search(r"isa|move", answer)
+                      else "decide later")
+            return call("set_maturity_instruction", {"option": option})
+        return end(f"You're all set. {results['set_maturity_instruction']}.")
+
+    # 3b. Accepts payments: one-off or monthly, and how much?
+    if not asked("one-off amount"):
+        return ask("Would you like to pay in a one-off amount, or set up regular monthly payments?")
+    monthly = re.search(r"month|regular|recurring", answer_to("one-off amount")) is not None
+    amount = parse_amount(" ".join(replies))
+    if amount is None and not monthly:
+        amount = parse_amount(everything_said)  # e.g. the lump sum mentioned earlier
+    if amount is None:
+        if not asked("How much"):
+            return ask("How much would you like to pay in each month?" if monthly
+                       else "How much would you like to pay in?")
+        amount = parse_amount(answer_to("How much"), pound_sign=False)
+    if amount is None:
+        return end("No problem, you can set up payments whenever you're ready.")
+    if "suggest_contribution_plan" not in tools_used:
+        return call("suggest_contribution_plan", {
+            "product_id": product_id,
+            "amount": amount,
+            "frequency": "monthly" if monthly else "one-off",
+        })
+    plan = results["suggest_contribution_plan"]
+
+    # 4. An ISA has a yearly limit, so check it.
+    if summary["isa"] and "check_isa_allowance" not in tools_used:
+        return call("check_isa_allowance", {})
+    if "warning" in plan:
+        return end(f"Heads up: {plan['warning'].removesuffix(' Tell the customer.')} "
+                   "You may want to pay in a little less.")
+
+    # 5. Regular payers and fund holders are offered a review.
+    if monthly or summary["risk"] != "low":
+        if not asked("review"):
+            return ask("Would you like me to book a review in 12 months to see how it's going?")
+        if ("schedule_review" not in tools_used
+                and re.search(r"\b(yes|yeah|sure|please|ok)\b", answer_to("review"))):
+            return call("schedule_review", {"months": 12})
+
+    guide = " I've also sent you a short guide." if "send_guide" in tools_used else ""
+    return end(f"You're all set.{guide} You can change your payments or get in touch at any time.")
 
 
 def review(recent: list[dict]) -> dict:
@@ -111,8 +164,8 @@ def review(recent: list[dict]) -> dict:
                "touch at any time.")
 
 
-def parse_amount(text: str) -> int | None:
-    match = re.search(r"£\s?([\d,]+)", text)
+def parse_amount(text: str, pound_sign: bool = True) -> int | None:
+    match = re.search(r"£\s?(\d[\d,]*)" if pound_sign else r"(\d[\d,]*)", text)
     return int(match.group(1).replace(",", "")) if match else None
 
 

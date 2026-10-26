@@ -9,6 +9,7 @@ own tools, and a tool that must end it.
 
 import json
 import os
+import re
 
 from openai import AsyncOpenAI
 
@@ -48,13 +49,21 @@ considering.
 
 GET_STARTED_PROMPT = BASE_PROMPT + """
 The customer has just opened an account (see the latest system note). Help them
-get started in a short conversation.
+get started in a short conversation. What is relevant depends on their product
+and on everything they have told you, including earlier in the conversation.
 
-- Ask whether they would like to pay in a one-off amount or regular monthly
-  payments, then use suggest_contribution_plan to show what that looks like.
-- Use get_account_summary to confirm what they hold and what it costs.
-- Offer to book a review with schedule_review. They may say no.
-- Finish with end_conversation.
+- Start with get_account_summary to see what the product allows.
+- If it accepts payments, ask whether they want to pay a one-off amount or
+  monthly, and how much. Never assume an amount. Then use
+  suggest_contribution_plan, and pass on any warning it returns.
+- If it is a fixed-term product, it cannot take more payments. Ask what should
+  happen at the end of the term and record it with set_maturity_instruction.
+- If they said they would be uncomfortable with falls in value, or that they
+  are new to investing, offer a short guide with send_guide.
+- If they are paying in monthly, or hold a fund that can fall in value, ask
+  whether they would like a review, and only use schedule_review if they agree.
+- Finish with end_conversation, briefly summarising what was set up. The
+  customer cannot reply to it, so ask any questions with ask_customer first.
 """
 
 REVIEW_PROMPT = BASE_PROMPT + """
@@ -118,11 +127,20 @@ TOOL_SCHEMAS = [
         "product_id": {"type": "string", "enum": PRODUCT_IDS},
     }),
     function("suggest_contribution_plan", "Show what a payment plan looks like over a year.", {
+        "product_id": {"type": "string", "enum": PRODUCT_IDS},
         "amount": {"type": "number", "description": "Pounds per payment"},
         "frequency": {"type": "string", "enum": ["one-off", "monthly"]},
     }),
     function("schedule_review", "Book a check-in with the customer a number of months from now.", {
         "months": {"type": "integer", "description": "1 to 24"},
+    }),
+    function("set_maturity_instruction", "Record what happens when a fixed-term product ends.", {
+        "option": {"type": "string", "enum": ["pay out to bank account",
+                                              "move to Easy Access Cash ISA", "decide later"]},
+    }),
+    function("send_guide", "Send the customer a short plain-English guide.", {
+        "topic": {"type": "string", "enum": ["what happens when markets fall",
+                                             "how fees affect your returns", "how ISAs work"]},
     }),
     function("end_conversation", "Send a closing message. Ends the conversation.", {
         "message": {"type": "string"},
@@ -140,6 +158,7 @@ PHASES = {
     "get_started": {
         "prompt": GET_STARTED_PROMPT,
         "tools": ["ask_customer", "get_account_summary", "suggest_contribution_plan",
+                  "check_isa_allowance", "set_maturity_instruction", "send_guide",
                   "schedule_review", "end_conversation"],
         "last_tool": "end_conversation",
     },
@@ -163,8 +182,23 @@ def check_tool_call(phase: str, tool: str, args: dict, history: list[dict]) -> s
             return "Present between one and three options."
         if any(o["product_id"] not in found for o in args["options"]):
             return "Only present products returned by search_products."
+    if tool == "end_conversation" and args["message"].rstrip().endswith("?"):
+        return "The customer cannot reply to a closing message. Use ask_customer first."
     if tool == "schedule_review" and not 1 <= args["months"] <= 24:
         return "A review must be between 1 and 24 months away."
+    if tool in ("suggest_contribution_plan", "set_maturity_instruction"):
+        summaries = [h["result"] for h in history
+                     if h["role"] == "tool" and h["tool"] == "get_account_summary"]
+        if not summaries:
+            return "Check the account summary first."
+        if tool == "suggest_contribution_plan" and not summaries[-1]["allows_top_ups"]:
+            return "This product does not accept further payments."
+        said = " ".join(h["text"] for h in history if h["role"] == "customer")
+        figures = {int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", said)}
+        if tool == "suggest_contribution_plan" and int(args["amount"]) not in figures:
+            return "Ask the customer how much they want to pay in. Do not assume an amount."
+        if tool == "set_maturity_instruction" and summaries[-1]["allows_top_ups"]:
+            return "Maturity instructions are only for fixed-term products."
     return None
 
 

@@ -64,8 +64,11 @@ is always reached however the conversation goes.
 | Tool | Purpose |
 |---|---|
 | `ask_customer(question)` | As phase 1, typed live |
-| `get_account_summary()` | Holdings, amount paid in, costs |
-| `suggest_contribution_plan(amount, frequency)` | Lump sum vs monthly, as guidance |
+| `get_account_summary(product_id)` | What they hold, risk, fees, and whether it takes more payments |
+| `suggest_contribution_plan(product_id, amount, frequency)` | Lump sum vs monthly, as guidance; code adds an ISA-limit warning |
+| `check_isa_allowance()` | Reused from phase 1, for ISA holders |
+| `set_maturity_instruction(option)` | Fixed-term products only: what happens at the end of the term |
+| `send_guide(topic)` | Short guide for worried or first-time customers |
 | `schedule_review(months)` | Durable timer for a later check-in (months shortened to seconds for the demo) |
 | `end_conversation(message)` | Ends the phase with a closing message |
 
@@ -86,6 +89,7 @@ affecting anything else.
 | 4 | **Swap in a real LLM** behind the same `decide_next_step` Activity; add guardrails (max turns, tool allowlist, schema for the final proposal) | Real conversation, same shape of history | "Agent chooses, code constrains" |
 | 5 | **Phase 2, get started**: rerun the agent loop after KYC with the phase 2 prompt and tools; `schedule_review` as a durable timer | A and B diverge again after identical KYC; the review timer fires and the agent resumes | Hourglass: "different again on the far side" |
 | 6 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; consent as real customer input (fixed terms text shown at the CLI, customer types "I agree" via Update, recorded verbatim); kill the worker mid-KYC and resume | Resume with no repeated steps; consent text identical for every customer | "Durable runtime records every step" |
+| 6b | **Varied paths after KYC**: goal-based phase 2 prompt; tools that only fit some products or customers; exact rules (ISA limit, closing message can't ask a question, top-ups only where allowed) enforced in code | Global fund, Cash ISA over the limit, Fixed Saver and a worried first-timer each take a different path | "Different again on the far side" |
 | 7 | **Demo polish**: crib sheet of what to type as customers A/B, readable Activity names, README run script, guidance/disclaimer wording reviewed | Recordable end to end in < 2 min | Recording |
 
 Why this order: the fixed part comes first because it is the easy,

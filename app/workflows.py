@@ -30,6 +30,8 @@ TOOLS = {
     "present_options": activities.present_options,
     "get_account_summary": activities.get_account_summary,
     "suggest_contribution_plan": activities.suggest_contribution_plan,
+    "set_maturity_instruction": activities.set_maturity_instruction,
+    "send_guide": activities.send_guide,
     "schedule_review": activities.schedule_review,
     "end_conversation": activities.end_conversation,
 }
@@ -229,6 +231,10 @@ def describe(tool: str, args: dict) -> str:
             return f"Account summary: {args['product_id']}"
         case "suggest_contribution_plan":
             return f"Contribution plan: £{args['amount']:,.0f} {args['frequency']}"
+        case "set_maturity_instruction":
+            return f"At end of term: {args['option']}"
+        case "send_guide":
+            return f"Send guide: {args['topic']}"
         case "schedule_review":
             return f"Schedule review in {args['months']} months"
         case "end_conversation":
