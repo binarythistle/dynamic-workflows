@@ -14,6 +14,7 @@
 ```
 InvestmentSessionWorkflow            <- the path is dynamic
   loop: llm_decide (Activity) -> tool call (Activity) -> ...
+        ask_customer = wait for a live typed reply (Update)
   wait for customer acceptance (Update)
   └─ KycWorkflow (child)             <- the guarantees are not
        verify_identity -> proof_of_address (wait for doc)
@@ -22,6 +23,9 @@ InvestmentSessionWorkflow            <- the path is dynamic
 - The agent loop lives in the Workflow; each model call and each tool call
   is an Activity. That is why the history records every decision, and why
   replay is deterministic even though the model is not.
+- `ask_customer` is not an Activity: the Workflow pauses until the customer
+  types a reply at the CLI (sent as an Update). The conversation is human
+  in the loop and durable from the start.
 - KYC is a separate child Workflow with hard-coded order. Same steps, same
   order, every customer.
 
@@ -35,22 +39,34 @@ app/
   starter.py       # run customer A / B from the CLI
 ```
 
+## Agent tools (all read-only, mocked)
+| Tool | Purpose |
+|---|---|
+| `ask_customer(question)` | Clarifying question; reply typed live |
+| `search_products(risk_level, horizon, needs_access)` | Filter the made-up catalogue |
+| `get_product_details(product_id)` | Description, risk, fees, access |
+| `check_isa_allowance(customer_id)` | Remaining £20,000 ISA allowance |
+| `present_options(options, explanation)` | Ends the loop; schema-checked handoff |
+
+The agent has no write tools. Only the fixed KYC flow changes anything.
+Every session ends at `present_options` (a turn limit forces it), so KYC
+is always reached however the conversation goes.
+
 ## Iterations
 
 | # | Goal | Done when | Video beat it supports |
 |---|---|---|---|
 | 0 | Skeleton: `uv` project, `temporalio`, dev server, worker | Hello Workflow visible in UI | — |
 | 1 | **Fixed KYC child Workflow** alone, stubbed Activities | Two runs give identical histories | "The bridge": fixed steps |
-| 2 | **Agent loop with a fake (scripted) model** | Customer A and B take different tool paths; each step is an Activity in history | "The path is dynamic" |
+| 2 | **Agent loop with a fake rule-based model**, answers typed live at the CLI | Different answers give different tool paths; each step is in history | "The path is dynamic" |
 | 3 | **Join them**: acceptance via Update, then start KYC child | One history: varied start, identical middle | Core hybrid (A vs B side by side) |
 | 4 | **Swap in a real LLM** behind the same `llm_decide` Activity; add guardrails (max turns, tool allowlist, schema for the final proposal) | Real conversation, same shape of history | "Agent chooses, code constrains" |
 | 5 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; kill the worker mid-KYC and resume | Resume with no repeated steps | "Durable runtime records every step" |
 | 6 | **Demo polish**: seeded customers A/B, readable Activity names, README run script, guidance/disclaimer wording reviewed | Recordable end to end in < 2 min | Recording |
 
 Why this order: the fixed part comes first because it is the easy,
-certain part and it fixes the vocabulary. The scripted model in step 2 lets
-us get the loop and history right without API keys or nondeterministic
-takes. The real LLM comes in only after the structure is settled.
+certain part and it fixes the vocabulary. The rule-based fake model in step 2
+lets us get the loop, live chat and history right without API keys. The real LLM comes in only after the structure is settled.
 
 ## Deliberately out of scope
 - Web UI, real KYC/sanctions providers, a database, auth.
@@ -70,3 +86,4 @@ takes. The real LLM comes in only after the structure is settled.
 4. Products: 4-5 made-up generic products with clear plain-English
    descriptions (e.g. cash ISA, global index fund, bond fund, balanced
    multi-asset fund). No real named funds.
+5. Customer answers are typed live at the CLI (resonates more on camera).
