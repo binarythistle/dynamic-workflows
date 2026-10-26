@@ -3,8 +3,8 @@ import asyncio
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from app.activities import say_hello
-from app.workflows import TASK_QUEUE, HelloWorkflow
+from app import activities
+from app.workflows import TASK_QUEUE, KycWorkflow
 
 
 async def main() -> None:
@@ -12,8 +12,14 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[HelloWorkflow],
-        activities=[say_hello],
+        workflows=[KycWorkflow],
+        activities=[
+            activities.verify_identity,
+            activities.check_proof_of_address,
+            activities.screen_sanctions,
+            activities.record_consent,
+            activities.open_account,
+        ],
     )
     print(f"Worker listening on '{TASK_QUEUE}'")
     await worker.run()
