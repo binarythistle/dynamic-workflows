@@ -12,14 +12,18 @@
 
 ## Target shape (what the finished code proves)
 ```
-InvestmentSessionWorkflow            <- the path is dynamic
+InvestmentSessionWorkflow
+  phase 1, explore                   <- the path is dynamic
   loop: llm_decide (Activity) -> tool call (Activity) -> ...
         ask_customer = wait for a live typed reply (Update)
   wait for customer acceptance (Update)
   └─ KycWorkflow (child)             <- the guarantees are not
        verify_identity -> proof_of_address (wait for doc)
        -> sanctions_screen -> [compliance review if flagged] -> consent -> open_account
+  phase 2, get started               <- dynamic again
+  same agent loop, different prompt and tools
 ```
+This is the hourglass from the cold open: wide, the bridge, wide again.
 - The agent loop lives in the Workflow; each model call and each tool call
   is an Activity. That is why the history records every decision, and why
   replay is deterministic even though the model is not.
@@ -27,7 +31,10 @@ InvestmentSessionWorkflow            <- the path is dynamic
   types a reply at the CLI (sent as an Update). The conversation is human
   in the loop and durable from the start.
 - KYC is a separate child Workflow with hard-coded order. Same steps, same
-  order, every customer.
+  order, every customer. Fixed does not mean linear: the compliance review
+  branch is decided by a rule written in advance, not by the agent.
+- Phase 2 reuses the phase 1 loop unchanged; only the prompt and tool set
+  differ.
 
 Planned layout (small, flat):
 ```
@@ -39,7 +46,7 @@ app/
   starter.py       # run customer A / B from the CLI
 ```
 
-## Agent tools (all read-only, mocked)
+## Agent tools, phase 1: explore (all read-only, mocked)
 | Tool | Purpose |
 |---|---|
 | `ask_customer(question)` | Clarifying question; reply typed live |
@@ -52,6 +59,17 @@ The agent has no write tools. Only the fixed KYC flow changes anything.
 Every session ends at `present_options` (a turn limit forces it), so KYC
 is always reached however the conversation goes.
 
+## Agent tools, phase 2: get started (mocked)
+| Tool | Purpose |
+|---|---|
+| `ask_customer(question)` | As phase 1, typed live |
+| `get_account_summary()` | Holdings, amount paid in, costs |
+| `suggest_contribution_plan(amount, frequency)` | Lump sum vs monthly, as guidance |
+| `schedule_review(months)` | Durable timer for a later check-in (months shortened to seconds for the demo) |
+
+Phase 2 is optional: if the video runs long, it can be cut without
+affecting anything else.
+
 ## Iterations
 
 | # | Goal | Done when | Video beat it supports |
@@ -61,8 +79,9 @@ is always reached however the conversation goes.
 | 2 | **Agent loop with a fake rule-based model**, answers typed live at the CLI | Different answers give different tool paths; each step is in history | "The path is dynamic" |
 | 3 | **Join them**: acceptance via Update, then start KYC child | One history: varied start, identical middle | Core hybrid (A vs B side by side) |
 | 4 | **Swap in a real LLM** behind the same `llm_decide` Activity; add guardrails (max turns, tool allowlist, schema for the final proposal) | Real conversation, same shape of history | "Agent chooses, code constrains" |
-| 5 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; kill the worker mid-KYC and resume | Resume with no repeated steps | "Durable runtime records every step" |
-| 6 | **Demo polish**: seeded customers A/B, readable Activity names, README run script, guidance/disclaimer wording reviewed | Recordable end to end in < 2 min | Recording |
+| 5 | **Phase 2, get started**: rerun the agent loop after KYC with the phase 2 prompt and tools; `schedule_review` as a durable timer | A and B diverge again after identical KYC; the review timer fires and the agent resumes | Hourglass: "different again on the far side" |
+| 6 | **Durability beats**: proof-of-address waits on a Signal (doc arrives later); compliance review on a flagged customer; kill the worker mid-KYC and resume | Resume with no repeated steps | "Durable runtime records every step" |
+| 7 | **Demo polish**: crib sheet of what to type as customers A/B, readable Activity names, README run script, guidance/disclaimer wording reviewed | Recordable end to end in < 2 min | Recording |
 
 Why this order: the fixed part comes first because it is the easy,
 certain part and it fixes the vocabulary. The rule-based fake model in step 2
