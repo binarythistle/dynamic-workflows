@@ -67,8 +67,6 @@ takes. The real LLM comes in only after the structure is settled.
 3. Wording: UK. The agent gives guidance, not a personal recommendation
    (FCA advice vs guidance line). On camera, note that rules differ in
    other jurisdictions. Affects prompt and disclaimer text only.
-
-## Still open
-- Product catalogue: 4-5 made-up generic products (proposal, e.g. cash
-  ISA, global index fund, bond fund, balanced multi-asset fund) vs real
-  named funds. Needed by iteration 2.
+4. Products: 4-5 made-up generic products with clear plain-English
+   descriptions (e.g. cash ISA, global index fund, bond fund, balanced
+   multi-asset fund). No real named funds.
